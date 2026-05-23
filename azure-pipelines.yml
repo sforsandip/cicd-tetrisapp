@@ -1,0 +1,85 @@
+trigger:
+  - main
+
+variables:
+  imageName: nodejs-tetris
+  acrName: acrnodejsdevops.azurecr.io
+
+stages:
+
+# ================= CI STAGE =================
+- stage: CI
+  displayName: "CI - Build & Code Quality"
+
+  jobs:
+    - job: Build
+      pool:
+        vmImage: ubuntu-latest
+
+      steps:
+
+        - task: NodeTool@0
+          displayName: "Install Node.js"
+          inputs:
+            versionSpec: "18.x"
+
+        - script: |
+            npm install
+          displayName: "Build"
+
+        - script: |
+            # Install SonarScanner CLI
+            npm install -g sonar-scanner
+
+            # Run SonarQube analysis
+            sonar-scanner \
+              -Dsonar.projectKey=$(SONAR_PROJECT_KEY) \
+              -Dsonar.organization=$(SONAR_ORG) \
+              -Dsonar.projectName=$(SONAR_PROJECT_NAME) \
+              -Dsonar.sources=. \
+              -Dsonar.host.url=$(SONAR_HOST_URL) \
+              -Dsonar.login=$(SONAR_TOKEN)
+          displayName: "Run SonarQube Analysis"
+
+# ================= CD STAGE =================
+- stage: CD
+  displayName: "CD - Docker & AKS Deploy"
+  dependsOn: CI
+
+  jobs:
+    - job: Deploy
+      pool:
+        vmImage: ubuntu-latest
+
+      steps:
+
+        - task: Docker@2
+          displayName: "Build & Push Docker Image"
+          inputs:
+            command: buildAndPush
+            containerRegistry: "ACR-Conn"
+            repository: $(imageName)
+            dockerfile: Dockerfile
+            tags: |
+              latest
+
+        - task: AzureCLI@2
+          displayName: "Deploy to AKS (CLI)"
+          inputs:
+            azureSubscription: "AzureServiceConnection"
+            scriptType: bash
+            scriptLocation: inlineScript
+            inlineScript: |
+
+              az aks get-credentials \
+                --resource-group rg-nodejs-aks-devops \
+                --name aks-nodejs-devops \
+                --overwrite-existing
+
+              kubectl create namespace prod --dry-run=client -o yaml | kubectl apply -f -
+
+              kubectl apply -f K8S/deployment.yaml -n prod
+
+              kubectl apply -f K8S/service.yaml -n prod
+
+              kubectl get svc -n prod
